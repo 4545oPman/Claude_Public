@@ -1,241 +1,223 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
-type Library = {
-  systemid: string;
-  systemname: string;
-  libkey: string;
-  libid: string;
-  short: string;
-  formal: string;
-  url: string;
-  address: string;
-  pref: string;
-  city: string;
-  post: string;
-  tel: string;
-  geocode: string;
-  category: string;
-  distance?: number;
+type Lap = {
+  id: number;
+  time: number;
+  diff: number;
 };
 
-type BookStatus = {
-  status: string;
-  reserveurl: string;
-  libkeys: Record<string, string>;
-};
-
-type CheckResult = {
-  books: Record<string, Record<string, BookStatus>>;
-};
-
-const STATUS_LABEL: Record<string, { label: string; color: string }> = {
-  OK: { label: "貸出可", color: "text-green-400" },
-  Running: { label: "確認中", color: "text-yellow-400" },
-  Checking: { label: "確認中", color: "text-yellow-400" },
-  Error: { label: "エラー", color: "text-red-400" },
-  "": { label: "不明", color: "text-gray-400" },
-};
-
-function statusStyle(s: string) {
-  if (s === "OK") return "text-green-400";
-  if (s === "Running" || s === "Checking") return "text-yellow-400";
-  if (s === "Error") return "text-red-400";
-  return "text-gray-400";
+function formatTime(ms: number): string {
+  const minutes = Math.floor(ms / 60000);
+  const seconds = Math.floor((ms % 60000) / 1000);
+  const centiseconds = Math.floor((ms % 1000) / 10);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(centiseconds).padStart(2, "0")}`;
 }
 
-function statusLabel(s: string) {
-  return STATUS_LABEL[s]?.label ?? s;
-}
+export default function Stopwatch() {
+  const [elapsed, setElapsed] = useState(0);
+  const [running, setRunning] = useState(false);
+  const [laps, setLaps] = useState<Lap[]>([]);
+  const [flash, setFlash] = useState<"start" | "stop" | "lap" | "reset" | null>(null);
+  const startTimeRef = useRef<number>(0);
+  const elapsedRef = useRef<number>(0);
+  const rafRef = useRef<number>(0);
+  const runningRef = useRef(false);
+  const lapsRef = useRef<Lap[]>([]);
+  const elapsedStateRef = useRef(0);
 
-export default function LibrarySearch() {
-  const [libraries, setLibraries] = useState<Library[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [located, setLocated] = useState(false);
-
-  // Book search
-  const [isbn, setIsbn] = useState("");
-  const [selectedSystem, setSelectedSystem] = useState<string | null>(null);
-  const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
-  const [checkLoading, setCheckLoading] = useState(false);
-
-  const findNearby = useCallback(() => {
-    if (!navigator.geolocation) {
-      setError("このブラウザは位置情報に対応していません。");
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    setLibraries([]);
-    setLocated(false);
-
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const { latitude, longitude } = pos.coords;
-        try {
-          const res = await fetch(
-            `/api/libraries?lat=${latitude}&lng=${longitude}&limit=20`
-          );
-          if (!res.ok) throw new Error("APIエラーが発生しました");
-          const data: Library[] = await res.json();
-          setLibraries(data);
-          setLocated(true);
-        } catch (e) {
-          setError(e instanceof Error ? e.message : "エラーが発生しました");
-        } finally {
-          setLoading(false);
-        }
-      },
-      (err) => {
-        setError("位置情報の取得に失敗しました: " + err.message);
-        setLoading(false);
-      },
-      { timeout: 10000 }
-    );
+  const tick = useCallback(() => {
+    setElapsed(Date.now() - startTimeRef.current + elapsedRef.current);
+    rafRef.current = requestAnimationFrame(tick);
   }, []);
 
-  const checkBook = useCallback(async (systemid: string) => {
-    if (!isbn.trim()) return;
-    setSelectedSystem(systemid);
-    setCheckResult(null);
-    setCheckLoading(true);
-    try {
-      const res = await fetch(`/api/check?isbn=${encodeURIComponent(isbn.trim())}&systemid=${encodeURIComponent(systemid)}`);
-      if (!res.ok) throw new Error("APIエラー");
-      const data: CheckResult = await res.json();
-      setCheckResult(data);
-    } catch {
-      // silently fail — status shown via null result
-    } finally {
-      setCheckLoading(false);
+  useEffect(() => {
+    if (running) {
+      startTimeRef.current = Date.now();
+      rafRef.current = requestAnimationFrame(tick);
+    } else {
+      cancelAnimationFrame(rafRef.current);
+      elapsedRef.current = elapsed;
     }
-  }, [isbn]);
+    return () => cancelAnimationFrame(rafRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running]);
+
+  useEffect(() => { runningRef.current = running; }, [running]);
+  useEffect(() => { lapsRef.current = laps; }, [laps]);
+  useEffect(() => { elapsedStateRef.current = elapsed; }, [elapsed]);
+
+  const triggerFlash = (type: typeof flash) => {
+    setFlash(type);
+    setTimeout(() => setFlash(null), 300);
+  };
+
+  const handleStartStop = useCallback(() => {
+    setRunning((r) => {
+      triggerFlash(r ? "stop" : "start");
+      return !r;
+    });
+  }, []);
+
+  const handleLapReset = useCallback(() => {
+    if (runningRef.current) {
+      const cur = elapsedStateRef.current;
+      const prev = lapsRef.current;
+      const lastLapTime = prev.length > 0 ? prev[prev.length - 1].time : 0;
+      setLaps((p) => [...p, { id: p.length + 1, time: cur, diff: cur - lastLapTime }]);
+      triggerFlash("lap");
+    } else {
+      setElapsed(0);
+      elapsedRef.current = 0;
+      setLaps([]);
+      triggerFlash("reset");
+    }
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.code === "Space") { e.preventDefault(); handleStartStop(); }
+      if (e.code === "KeyL") handleLapReset();
+      if (e.code === "KeyR" && !runningRef.current) handleLapReset();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [handleStartStop, handleLapReset]);
+
+  const minLap = laps.length > 1 ? Math.min(...laps.map((l) => l.diff)) : null;
+  const maxLap = laps.length > 1 ? Math.max(...laps.map((l) => l.diff)) : null;
+
+  const ringColor = running ? "rgba(34,197,94,0.15)" : "rgba(99,102,241,0.1)";
 
   return (
-    <main className="min-h-screen bg-[#0a0a0f] text-white px-4 py-12 font-sans">
-      <div className="max-w-2xl mx-auto">
+    <main className="min-h-screen bg-[#0a0a0f] text-white flex flex-col items-center justify-start pt-12 px-4 font-sans">
 
-        {/* Header */}
-        <div className="flex items-center gap-3 mb-2">
-          <span className="text-2xl">📚</span>
-          <h1 className="text-xl font-semibold tracking-tight">近くの図書館を探す</h1>
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-14">
+        <div className={`w-2 h-2 rounded-full transition-colors duration-300 ${running ? "bg-green-400 shadow-[0_0_8px_2px_rgba(34,197,94,0.6)]" : "bg-gray-600"}`} />
+        <span className="text-xs font-medium tracking-[0.25em] uppercase text-gray-500">
+          Stopwatch
+        </span>
+      </div>
+
+      {/* Timer ring */}
+      <div
+        className="relative flex items-center justify-center mb-14 rounded-full transition-all duration-500"
+        style={{
+          width: 300,
+          height: 300,
+          background: `radial-gradient(circle at 50% 50%, ${ringColor} 0%, transparent 70%)`,
+          boxShadow: running
+            ? "0 0 60px 0 rgba(34,197,94,0.08), inset 0 0 60px 0 rgba(34,197,94,0.04)"
+            : "0 0 60px 0 rgba(99,102,241,0.06), inset 0 0 60px 0 rgba(99,102,241,0.03)",
+        }}
+      >
+        {/* Outer ring */}
+        <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 300 300">
+          <circle cx="150" cy="150" r="140" fill="none" stroke="#1a1a2e" strokeWidth="1" />
+          <circle
+            cx="150" cy="150" r="140" fill="none"
+            stroke={running ? "rgba(34,197,94,0.25)" : "rgba(99,102,241,0.2)"}
+            strokeWidth="1"
+            strokeDasharray="879.6"
+            strokeDashoffset={879.6 - (879.6 * ((elapsed % 60000) / 60000))}
+            strokeLinecap="round"
+            className="transition-colors duration-500"
+          />
+        </svg>
+
+        <div className="flex flex-col items-center select-none">
+          <span
+            className={`text-6xl font-extralight tabular-nums tracking-tight transition-all duration-150 ${
+              flash === "start" ? "text-green-300" :
+              flash === "stop"  ? "text-red-300"   :
+              flash === "lap"   ? "text-indigo-300" :
+              flash === "reset" ? "text-gray-400"  :
+              "text-white"
+            }`}
+          >
+            {formatTime(elapsed)}
+          </span>
+          {laps.length > 0 && (
+            <span className="text-xs text-gray-600 mt-2 tracking-widest">
+              LAP {laps.length + 1}
+            </span>
+          )}
         </div>
-        <p className="text-sm text-gray-500 mb-8">現在地から最寄りの図書館を検索します。Powered by <span className="text-indigo-400">カーリル</span></p>
+      </div>
 
-        {/* Location button */}
-        <button
-          onClick={findNearby}
-          disabled={loading}
-          className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed font-medium text-sm transition-colors mb-6"
-        >
-          {loading ? "検索中..." : "現在地から図書館を検索"}
-        </button>
+      {/* Buttons */}
+      <div className="flex gap-12 mb-14 items-center">
+        <div className="flex flex-col items-center gap-2">
+          <button
+            onClick={handleLapReset}
+            className="w-16 h-16 rounded-full bg-[#1a1a2e] border border-white/10 text-gray-300 font-medium text-sm hover:bg-[#1f1f3a] hover:border-white/20 active:scale-95 transition-all"
+          >
+            {running ? "Lap" : "Reset"}
+          </button>
+          <span className="text-[10px] text-gray-600 tracking-widest">
+            {running ? "L" : "R"}
+          </span>
+        </div>
 
-        {error && (
-          <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-sm text-red-400 mb-6">
-            {error}
+        <div className="flex flex-col items-center gap-2">
+          <button
+            onClick={handleStartStop}
+            className={`w-20 h-20 rounded-full font-semibold text-base active:scale-95 transition-all duration-200 relative overflow-hidden ${
+              running
+                ? "bg-red-500/10 border border-red-500/40 text-red-400 hover:bg-red-500/20"
+                : "bg-green-500/10 border border-green-500/40 text-green-400 hover:bg-green-500/20"
+            }`}
+          >
+            <span className="relative z-10">{running ? "Stop" : "Start"}</span>
+          </button>
+          <span className="text-[10px] text-gray-600 tracking-widest">Space</span>
+        </div>
+      </div>
+
+      {/* Keyboard hint */}
+      <div className="flex gap-4 mb-10 text-[11px] text-gray-700">
+        <span><kbd className="bg-white/5 border border-white/10 rounded px-1.5 py-0.5 font-mono">Space</kbd> Start / Stop</span>
+        <span><kbd className="bg-white/5 border border-white/10 rounded px-1.5 py-0.5 font-mono">L</kbd> Lap</span>
+        <span><kbd className="bg-white/5 border border-white/10 rounded px-1.5 py-0.5 font-mono">R</kbd> Reset</span>
+      </div>
+
+      {/* Lap list */}
+      {laps.length > 0 && (
+        <div className="w-full max-w-sm bg-white/[0.02] border border-white/[0.06] rounded-2xl overflow-hidden">
+          <div className="flex justify-between text-[11px] text-gray-600 px-5 py-3 border-b border-white/[0.06] tracking-widest uppercase">
+            <span className="w-12">Lap</span>
+            <span>Split</span>
+            <span>Total</span>
           </div>
-        )}
-
-        {/* ISBN search */}
-        {located && libraries.length > 0 && (
-          <div className="mb-8 bg-white/[0.03] border border-white/[0.08] rounded-2xl p-4">
-            <p className="text-xs text-gray-400 mb-3 uppercase tracking-widest">本の在庫を確認</p>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={isbn}
-                onChange={(e) => setIsbn(e.target.value)}
-                placeholder="ISBNを入力（例: 9784003101315）"
-                className="flex-1 bg-white/[0.05] border border-white/[0.1] rounded-lg px-3 py-2 text-sm placeholder-gray-600 outline-none focus:border-indigo-500 transition-colors"
-              />
-            </div>
-            <p className="text-xs text-gray-600 mt-2">ISBN入力後、図書館名の「在庫確認」ボタンを押してください</p>
-          </div>
-        )}
-
-        {/* Library list */}
-        {libraries.length > 0 && (
-          <ul className="space-y-3">
-            {libraries.map((lib) => {
-              const bookStatuses = checkResult?.books[isbn.replace(/-/g, "")];
-              const sysStatus = bookStatuses?.[lib.systemid];
-
+          <ul>
+            {[...laps].reverse().map((lap) => {
+              const isBest = lap.diff === minLap;
+              const isWorst = lap.diff === maxLap;
               return (
                 <li
-                  key={lib.libid}
-                  className="bg-white/[0.03] border border-white/[0.07] rounded-2xl p-4 hover:border-white/[0.14] transition-colors"
+                  key={lap.id}
+                  className={`flex justify-between px-5 py-3 text-sm tabular-nums border-b border-white/[0.04] last:border-0 ${
+                    isBest  ? "text-green-400 bg-green-500/5"  :
+                    isWorst ? "text-red-400 bg-red-500/5"      :
+                    "text-gray-300"
+                  }`}
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="font-medium text-sm truncate">{lib.formal || lib.short}</p>
-                      <p className="text-xs text-gray-500 mt-0.5 truncate">{lib.address}</p>
-                      {lib.tel && (
-                        <p className="text-xs text-gray-600 mt-0.5">📞 {lib.tel}</p>
-                      )}
-                      {lib.url && (
-                        <a
-                          href={lib.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs text-indigo-400 hover:underline mt-1 inline-block"
-                        >
-                          ウェブサイト →
-                        </a>
-                      )}
-                    </div>
-
-                    <div className="flex flex-col items-end gap-2 shrink-0">
-                      {isbn.trim() && (
-                        <button
-                          onClick={() => checkBook(lib.systemid)}
-                          disabled={checkLoading && selectedSystem === lib.systemid}
-                          className="text-xs bg-indigo-600/30 hover:bg-indigo-600/50 border border-indigo-500/30 rounded-lg px-3 py-1.5 text-indigo-300 transition-colors disabled:opacity-50"
-                        >
-                          {checkLoading && selectedSystem === lib.systemid ? "確認中..." : "在庫確認"}
-                        </button>
-                      )}
-
-                      {sysStatus && (
-                        <div className="text-right">
-                          <span className={`text-xs font-medium ${statusStyle(sysStatus.status)}`}>
-                            {statusLabel(sysStatus.status)}
-                          </span>
-                          {sysStatus.reserveurl && sysStatus.status === "OK" && (
-                            <a
-                              href={sysStatus.reserveurl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="block text-xs text-indigo-400 hover:underline mt-0.5"
-                            >
-                              予約する →
-                            </a>
-                          )}
-                          {sysStatus.libkeys && Object.keys(sysStatus.libkeys).length > 0 && (
-                            <div className="mt-1 space-y-0.5">
-                              {Object.entries(sysStatus.libkeys).map(([key, val]) => (
-                                <p key={key} className="text-xs text-gray-500">
-                                  {key}: <span className={statusStyle(val)}>{val}</span>
-                                </p>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                  <span className="w-12 font-medium">
+                    {isBest  && <span className="text-green-500 mr-1">▲</span>}
+                    {isWorst && <span className="text-red-500 mr-1">▼</span>}
+                    {lap.id}
+                  </span>
+                  <span className="font-mono">{formatTime(lap.diff)}</span>
+                  <span className="font-mono text-gray-500">{formatTime(lap.time)}</span>
                 </li>
               );
             })}
           </ul>
-        )}
-
-        {located && libraries.length === 0 && !loading && (
-          <p className="text-center text-gray-500 text-sm mt-8">近くに図書館が見つかりませんでした。</p>
-        )}
-      </div>
+        </div>
+      )}
     </main>
   );
 }
